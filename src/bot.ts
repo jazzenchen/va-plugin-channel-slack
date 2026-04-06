@@ -156,6 +156,41 @@ export class SlackBot {
       }
     });
 
+    // Handle /va and /vibearound slash commands — forward as /<rest> to the agent
+    for (const cmd of ["/va", "/vibearound"]) {
+      this.app.command(cmd, async ({ command, ack }) => {
+        await ack();
+        const chatId = command.channel_id;
+        const text = command.text?.trim() ?? "";
+        const userId = command.user_id;
+
+        // Reconstruct as a slash command: "/va help" → "/va help" (parser strips prefix)
+        const fullText = text ? `${cmd} ${text}` : cmd;
+        this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId} text=${text}`);
+
+        const contentBlocks: ContentBlock[] = [{ type: "text", text: fullText }];
+
+        this.streamHandler?.onPromptSent(chatId);
+
+        try {
+          const response = await this.agent.prompt({
+            sessionId: chatId,
+            prompt: contentBlocks,
+          });
+          this.log("info", `slash prompt done chat=${chatId} stopReason=${response.stopReason}`);
+          this.streamHandler?.onTurnEnd(chatId);
+        } catch (error: unknown) {
+          const errMsg = error instanceof Error
+            ? error.message
+            : typeof error === "object" && error !== null && "message" in error
+              ? String((error as { message: unknown }).message)
+              : String(error);
+          this.log("error", `slash prompt failed chat=${chatId}: ${errMsg}`);
+          this.streamHandler?.onTurnError(chatId, errMsg);
+        }
+      });
+    }
+
     // Handle interactive actions (button clicks from permission prompts, etc.)
     this.app.action(/^va_action_.*/, async ({ action, ack, body }) => {
       await ack();
