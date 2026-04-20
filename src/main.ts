@@ -31,4 +31,14 @@ runChannelPlugin({
     ),
   createRenderer: (bot, log, verbose) =>
     new AgentStreamHandler(bot, log, verbose),
+  // Heartbeat health check — auth.test() is a cheap per-call verification
+  // that our tokens + Socket Mode are still working.
+  healthCheck: async (bot) => {
+    try {
+      const res = await bot.app.client.auth.test();
+      return res.ok === true;
+    } catch {
+      return false;
+    }
+  },
 });
