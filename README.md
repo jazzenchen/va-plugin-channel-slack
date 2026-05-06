@@ -13,7 +13,62 @@ Slack channel plugin for VibeAround. It uses Slack Bolt with Socket Mode, so no 
 
 ## Slack App Manifest
 
-Create the Slack app from `slack-app-manifest.json` in this directory, or paste that JSON into **Slack API** -> **Your Apps** -> **Create New App** -> **From an app manifest**.
+Create the Slack app from **Slack API** -> **Your Apps** -> **Create New App** -> **From an app manifest**, then paste this manifest:
+
+```json
+{
+  "display_information": {
+    "name": "VibeAround"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "VibeAround",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/va",
+        "description": "VibeAround command (e.g. /va help, /va switch claude)",
+        "should_escape": false
+      },
+      {
+        "command": "/vibearound",
+        "description": "VibeAround command",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "files:read",
+        "app_mentions:read",
+        "chat:write",
+        "commands",
+        "im:history",
+        "im:read",
+        "im:write"
+      ]
+    },
+    "pkce_enabled": false
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false,
+    "is_mcp_enabled": false
+  }
+}
+```
 
 The manifest enables:
 
