@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createSlackChannelContext, isSlackDm } from "../dist/route-context.js";
 
-test("Slack route metadata prefers the real bot identity and preserves threads", () => {
+test("Slack keeps the host instance stable and addresses the real bot", () => {
   assert.deepEqual(
     createSlackChannelContext(
       {
@@ -21,8 +21,8 @@ test("Slack route metadata prefers the real bot identity and preserves threads",
       },
     ),
     {
-      channelInstanceId: "U_BOT",
-      actorId: "codex-reviewer",
+      channelInstanceId: "slack-primary",
+      actorId: "U_BOT",
       chatId: "C_GROUP",
       topicId: "1710000000.000001",
       senderId: "U_SENDER",

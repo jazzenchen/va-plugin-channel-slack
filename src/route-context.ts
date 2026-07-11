@@ -19,14 +19,14 @@ export interface SlackInboundRoute {
   addressedBy: AddressedBy;
 }
 
-/** Build the platform-neutral route while preferring Slack's real bot user ID. */
+/** Keep the host instance stable; use Slack's bot user ID as the addressed actor. */
 export function createSlackChannelContext(
   identity: SlackRouteIdentity,
   route: SlackInboundRoute,
 ): ChannelInboundContext {
   return {
-    channelInstanceId: identity.botUserId ?? identity.channelInstanceId,
-    actorId: identity.actorId,
+    channelInstanceId: identity.channelInstanceId,
+    actorId: identity.botUserId ?? identity.actorId,
     ...route,
   };
 }
