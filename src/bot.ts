@@ -8,7 +8,7 @@
  */
 
 import path from "node:path";
-import { App } from "@slack/bolt";
+import { App, SocketModeReceiver } from "@slack/bolt";
 import type { AppMentionEvent, GenericMessageEvent } from "@slack/types";
 import type {
   Agent,
@@ -48,6 +48,7 @@ type SlackInboundFile = {
 
 export class SlackBot {
   readonly app: App;
+  private receiver: SocketModeReceiver;
   private agent: Agent;
   private log: LogFn;
   private cacheDir: string;
@@ -70,10 +71,10 @@ export class SlackBot {
     this.channelInstanceId = channelInstanceId;
     this.actorId = actorId;
 
+    this.receiver = new SocketModeReceiver({ appToken: config.app_token });
     this.app = new App({
       token: config.bot_token,
-      appToken: config.app_token,
-      socketMode: true,
+      receiver: this.receiver,
       // Disable built-in HTTP receiver — we're stdio-only
     });
 
@@ -94,6 +95,10 @@ export class SlackBot {
 
   async stop(): Promise<void> {
     await this.app.stop();
+  }
+
+  isConnected(): boolean {
+    return this.receiver.client.websocket?.isActive() === true;
   }
 
   private registerHandlers(): void {
