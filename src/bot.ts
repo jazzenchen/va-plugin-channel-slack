@@ -13,17 +13,23 @@ import type { AppMentionEvent, GenericMessageEvent } from "@slack/types";
 import type {
   Agent,
   ChannelInboundContext,
+  ChannelTarget,
   ContentBlock,
 } from "@vibearound/plugin-channel-sdk";
 import {
   cancelChannelPrompt,
+  channelTargetFromInboundContext,
   extractErrorMessage,
   isChannelStopCommand,
   sendChannelPrompt,
 } from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadSlackFile } from "./media-download.js";
-import { createSlackChannelContext, isSlackDm } from "./route-context.js";
+import {
+  createSlackChannelContext,
+  isSlackDm,
+  parseSlackCommandText,
+} from "./route-context.js";
 
 export interface SlackConfig {
   bot_token: string;
@@ -125,7 +131,8 @@ export class SlackBot {
       if (text && await this.cancelIfRequested(text, context, "dm")) return;
 
       // If a permission prompt is awaiting text, consume this message and stop.
-      if (text && this.streamHandler?.consumePendingText(chatId, text)) return;
+      const target = channelTargetFromInboundContext(context);
+      if (text && this.streamHandler?.consumePendingText(target, text)) return;
 
       await this.promptAgent(context, contentBlocks, "dm");
     });
@@ -160,18 +167,32 @@ export class SlackBot {
       if (text && await this.cancelIfRequested(text, context, "mention")) return;
 
       // If a permission prompt is awaiting text, consume this message and stop.
-      if (text && this.streamHandler?.consumePendingText(chatId, text)) return;
+      const target = channelTargetFromInboundContext(context);
+      if (text && this.streamHandler?.consumePendingText(target, text)) return;
 
       await this.promptAgent(context, contentBlocks, "mention");
     });
 
     // Handle /va and /vibearound slash commands — forward as /<rest> to the agent
     for (const cmd of ["/va", "/vibearound"]) {
-      this.app.command(cmd, async ({ command, ack }) => {
+      this.app.command(cmd, async ({ command, ack, respond }) => {
         await ack();
         const chatId = command.channel_id;
-        const text = command.text?.trim() ?? "";
+        const rawText = command.text?.trim() ?? "";
         const userId = command.user_id;
+        const scope = isSlackDm(chatId) ? "dm" : "group";
+        const text = parseSlackCommandText(rawText, scope, this.botUserId);
+
+        if (text === null) {
+          this.log("debug", `slash cmd=${cmd} ignored chat=${chatId}: bot not mentioned`);
+          await respond({
+            response_type: "ephemeral",
+            text: this.botUserId
+              ? `Mention <@${this.botUserId}> after ${cmd} in a channel.`
+              : "The bot identity is not ready yet. Please try again.",
+          });
+          return;
+        }
 
         // Reconstruct as a slash command: "/va help" → "/va help" (parser strips prefix)
         const fullText = text ? `${cmd} ${text}` : cmd;
@@ -183,8 +204,8 @@ export class SlackBot {
           topicId: (command as typeof command & { thread_ts?: string }).thread_ts,
           senderId: userId,
           platformMessageId: command.trigger_id,
-          scope: isSlackDm(chatId) ? "dm" : "group",
-          addressedBy: isSlackDm(chatId) ? "dm" : "callback",
+          scope,
+          addressedBy: scope === "dm" ? "dm" : "mention",
         });
         if (await this.cancelIfRequested(fullText, context, `slash ${cmd}`)) return;
         await this.promptAgent(context, contentBlocks, `slash ${cmd}`);
@@ -311,7 +332,8 @@ export class SlackBot {
     source: string,
   ): Promise<void> {
     const chatId = context.chatId;
-    this.streamHandler?.onPromptSent(chatId);
+    const target: ChannelTarget = channelTargetFromInboundContext(context);
+    this.streamHandler?.onPromptSent(target);
 
     try {
       const response = await sendChannelPrompt(this.agent, {
@@ -319,15 +341,15 @@ export class SlackBot {
         prompt: contentBlocks,
       });
       if (!response) {
-        this.streamHandler?.onTurnEnd(chatId);
+        await this.streamHandler?.onTurnEnd(target);
         return;
       }
       this.log("info", `${source} prompt done chat=${chatId} stopReason=${response.stopReason}`);
-      this.streamHandler?.onTurnEnd(chatId);
+      await this.streamHandler?.onTurnEnd(target);
     } catch (error: unknown) {
       const errMsg = extractErrorMessage(error);
       this.log("error", `${source} prompt failed chat=${chatId}: ${errMsg}`);
-      this.streamHandler?.onTurnError(chatId, errMsg);
+      await this.streamHandler?.onTurnError(target, errMsg);
     }
   }
 
