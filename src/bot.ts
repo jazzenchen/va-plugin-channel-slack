@@ -10,10 +10,20 @@
 import path from "node:path";
 import { App } from "@slack/bolt";
 import type { AppMentionEvent, GenericMessageEvent } from "@slack/types";
-import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
-import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
+import type {
+  Agent,
+  ChannelInboundContext,
+  ContentBlock,
+} from "@vibearound/plugin-channel-sdk";
+import {
+  cancelChannelPrompt,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadSlackFile } from "./media-download.js";
+import { createSlackChannelContext, isSlackDm } from "./route-context.js";
 
 export interface SlackConfig {
   bot_token: string;
@@ -35,13 +45,24 @@ export class SlackBot {
   private agent: Agent;
   private log: LogFn;
   private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
   private streamHandler: AgentStreamHandler | null = null;
   private botUserId: string | null = null;
 
-  constructor(config: SlackConfig, agent: Agent, log: LogFn, cacheDir: string) {
+  constructor(
+    config: SlackConfig,
+    agent: Agent,
+    log: LogFn,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
     this.agent = agent;
     this.log = log;
     this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
 
     this.app = new App({
       token: config.bot_token,
@@ -92,10 +113,21 @@ export class SlackBot {
       const contentBlocks = await this.buildContentBlocks(chatId, text, msg.files);
       if (contentBlocks.length === 0) return;
 
+      const context = this.channelContext({
+        chatId,
+        topicId: msg.thread_ts,
+        senderId: userId,
+        platformMessageId: msg.ts,
+        scope: "dm",
+        addressedBy: "dm",
+      });
+
+      if (text && await this.cancelIfRequested(text, context, "dm")) return;
+
       // If a permission prompt is awaiting text, consume this message and stop.
       if (text && this.streamHandler?.consumePendingText(chatId, text)) return;
 
-      await this.promptAgent(chatId, contentBlocks, "dm");
+      await this.promptAgent(context, contentBlocks, "dm");
     });
 
     this.app.event("app_mention", async ({ event }) => {
@@ -116,10 +148,21 @@ export class SlackBot {
       const contentBlocks = await this.buildContentBlocks(chatId, text, files);
       if (contentBlocks.length === 0) return;
 
+      const context = this.channelContext({
+        chatId,
+        topicId: mention.thread_ts,
+        senderId: mention.user,
+        platformMessageId: mention.ts,
+        scope: "group",
+        addressedBy: "mention",
+      });
+
+      if (text && await this.cancelIfRequested(text, context, "mention")) return;
+
       // If a permission prompt is awaiting text, consume this message and stop.
       if (text && this.streamHandler?.consumePendingText(chatId, text)) return;
 
-      await this.promptAgent(chatId, contentBlocks, "mention");
+      await this.promptAgent(context, contentBlocks, "mention");
     });
 
     // Handle /va and /vibearound slash commands — forward as /<rest> to the agent
@@ -135,7 +178,16 @@ export class SlackBot {
         this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId} text=${text}`);
 
         const contentBlocks: ContentBlock[] = [{ type: "text", text: fullText }];
-        await this.promptAgent(chatId, contentBlocks, `slash ${cmd}`);
+        const context = this.channelContext({
+          chatId,
+          topicId: (command as typeof command & { thread_ts?: string }).thread_ts,
+          senderId: userId,
+          platformMessageId: command.trigger_id,
+          scope: isSlackDm(chatId) ? "dm" : "group",
+          addressedBy: isSlackDm(chatId) ? "dm" : "callback",
+        });
+        if (await this.cancelIfRequested(fullText, context, `slash ${cmd}`)) return;
+        await this.promptAgent(context, contentBlocks, `slash ${cmd}`);
       });
     }
 
@@ -184,6 +236,15 @@ export class SlackBot {
       const channelId = (body as any).channel?.id;
       if (!channelId) return;
 
+      const context = this.channelContext({
+        chatId: channelId,
+        topicId: (body as any).message?.thread_ts,
+        senderId: (body as any).user?.id,
+        platformMessageId: (body as any).message?.ts,
+        scope: isSlackDm(channelId) ? "dm" : "group",
+        addressedBy: "callback",
+      });
+
       this.agent.extNotification?.("_va/callback", {
         chatId: channelId,
         callbackId: (action as any).action_id,
@@ -192,6 +253,7 @@ export class SlackBot {
           name: (body as any).user?.name ?? "",
         },
         data: (action as any).value ?? (action as any).selected_option?.value ?? "",
+        "va.channel": context,
       }).catch(() => {});
     });
   }
@@ -244,17 +306,22 @@ export class SlackBot {
   }
 
   private async promptAgent(
-    chatId: string,
+    context: ChannelInboundContext,
     contentBlocks: ContentBlock[],
     source: string,
   ): Promise<void> {
+    const chatId = context.chatId;
     this.streamHandler?.onPromptSent(chatId);
 
     try {
-      const response = await this.agent.prompt({
-        sessionId: chatId,
+      const response = await sendChannelPrompt(this.agent, {
+        context,
         prompt: contentBlocks,
       });
+      if (!response) {
+        this.streamHandler?.onTurnEnd(chatId);
+        return;
+      }
       this.log("info", `${source} prompt done chat=${chatId} stopReason=${response.stopReason}`);
       this.streamHandler?.onTurnEnd(chatId);
     } catch (error: unknown) {
@@ -262,6 +329,38 @@ export class SlackBot {
       this.log("error", `${source} prompt failed chat=${chatId}: ${errMsg}`);
       this.streamHandler?.onTurnError(chatId, errMsg);
     }
+  }
+
+  private channelContext(
+    route: Omit<ChannelInboundContext, "channelInstanceId" | "actorId">,
+  ): ChannelInboundContext {
+    return createSlackChannelContext(
+      {
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        botUserId: this.botUserId,
+      },
+      route,
+    );
+  }
+
+  private async cancelIfRequested(
+    text: string,
+    context: ChannelInboundContext,
+    source: string,
+  ): Promise<boolean> {
+    if (!isChannelStopCommand(text)) return false;
+
+    try {
+      const cancelled = await cancelChannelPrompt(this.agent, { context });
+      this.log("info", `${source} cancel requested chat=${context.chatId} sent=${cancelled}`);
+    } catch (error: unknown) {
+      this.log(
+        "error",
+        `${source} cancel failed chat=${context.chatId}: ${extractErrorMessage(error)}`,
+      );
+    }
+    return true;
   }
 
   private stripBotMention(text: string): string {
