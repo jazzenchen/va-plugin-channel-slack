@@ -1,18 +1,19 @@
 {
   "name": "@vibearound/plugin-channel-slack",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "description": "VibeAround Slack channel plugin (stdio JSON-RPC)",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
     "dev": "tsc --watch",
     "start": "node dist/main.js"
   },
   "dependencies": {
     "@slack/bolt": "^4.1.0",
-    "@vibearound/plugin-channel-sdk": "^0.6.1"
+    "@vibearound/plugin-channel-sdk": "^0.6.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
