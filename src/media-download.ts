@@ -7,6 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readBoundedResponse } from "./bounded-response.js";
 
 function log(level: string, msg: string): void {
   process.stderr.write(`[slack-media][${level}] ${msg}\n`);
@@ -63,7 +64,7 @@ export async function downloadSlackFile(params: {
   }
 
   try {
-    log("debug", `downloading file=${fileId} url=${urlPrivate.slice(0, 80)}...`);
+    log("debug", `downloading file=${fileId}`);
 
     const res = await fetch(urlPrivate, {
       headers: { Authorization: `Bearer ${botToken}` },
@@ -74,7 +75,7 @@ export async function downloadSlackFile(params: {
       return null;
     }
 
-    const buf = Buffer.from(await res.arrayBuffer());
+    const buf = await readBoundedResponse(res);
     log("debug", `downloaded ${buf.length} bytes for file=${fileId}`);
 
     await fs.mkdir(path.dirname(cachePath), { recursive: true });
