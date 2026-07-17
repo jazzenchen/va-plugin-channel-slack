@@ -5,6 +5,7 @@
 import {
   BlockRenderer,
   type BlockKind,
+  type ChannelTarget,
   type RequestPermissionRequest,
   type VerboseConfig,
 } from "@vibearound/plugin-channel-sdk";
@@ -29,7 +30,7 @@ export class AgentStreamHandler extends BlockRenderer<string> {
 
   /** Render permission request as a Block Kit actions block. */
   protected async onRequestPermission(
-    chatId: string,
+    target: ChannelTarget,
     request: RequestPermissionRequest,
     callbackId: string,
   ): Promise<void> {
@@ -46,7 +47,8 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     }));
 
     await this.slackBot.app.client.chat.postMessage({
-      channel: chatId,
+      channel: target.chatId,
+      ...(target.topicId ? { thread_ts: target.topicId } : {}),
       text: `🔐 Permission required — ${toolTitle}`,
       blocks: [
         {
@@ -61,8 +63,12 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     });
   }
 
-  protected async sendText(chatId: string, text: string): Promise<void> {
-    await this.slackBot.app.client.chat.postMessage({ channel: chatId, text });
+  protected async sendText(target: ChannelTarget, text: string): Promise<void> {
+    await this.slackBot.app.client.chat.postMessage({
+      channel: target.chatId,
+      text,
+      ...(target.topicId ? { thread_ts: target.topicId } : {}),
+    });
   }
 
   protected formatContent(kind: BlockKind, content: string, _sealed: boolean): string {
@@ -73,9 +79,17 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     }
   }
 
-  protected async sendBlock(chatId: string, _kind: BlockKind, content: string): Promise<string | null> {
+  protected async sendBlock(
+    target: ChannelTarget,
+    _kind: BlockKind,
+    content: string,
+  ): Promise<string | null> {
     try {
-      const result = await this.slackBot.app.client.chat.postMessage({ channel: chatId, text: content });
+      const result = await this.slackBot.app.client.chat.postMessage({
+        channel: target.chatId,
+        text: content,
+        ...(target.topicId ? { thread_ts: target.topicId } : {}),
+      });
       return result.ts ?? null;
     } catch (e) {
       this.log("error", `sendBlock failed: ${e}`);
@@ -84,14 +98,18 @@ export class AgentStreamHandler extends BlockRenderer<string> {
   }
 
   protected async editBlock(
-    chatId: string,
+    target: ChannelTarget,
     ref: string,
     _kind: BlockKind,
     content: string,
     _sealed: boolean,
   ): Promise<void> {
     try {
-      await this.slackBot.app.client.chat.update({ channel: chatId, ts: ref, text: content });
+      await this.slackBot.app.client.chat.update({
+        channel: target.chatId,
+        ts: ref,
+        text: content,
+      });
     } catch (e) {
       this.log("error", `editBlock failed: ${e}`);
     }

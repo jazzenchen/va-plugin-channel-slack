@@ -3,17 +3,33 @@
  *
  * Handles:
  *   - Bot creation and Socket Mode lifecycle
- *   - Inbound DM message parsing → ACP prompt() to Host
+ *   - Inbound DM, app mention, and slash-command parsing -> ACP prompt() to Host
  *   - Action handling for interactive components
  */
 
 import path from "node:path";
-import { App } from "@slack/bolt";
-import type { GenericMessageEvent } from "@slack/types";
-import type { Agent, ContentBlock } from "@vibearound/plugin-channel-sdk";
-import { extractErrorMessage } from "@vibearound/plugin-channel-sdk";
+import { App, SocketModeReceiver } from "@slack/bolt";
+import type { AppMentionEvent, GenericMessageEvent } from "@slack/types";
+import type {
+  Agent,
+  ChannelInboundContext,
+  ChannelTarget,
+  ContentBlock,
+} from "@vibearound/plugin-channel-sdk";
+import {
+  cancelChannelPrompt,
+  channelTargetFromInboundContext,
+  extractErrorMessage,
+  isChannelStopCommand,
+  sendChannelPrompt,
+} from "@vibearound/plugin-channel-sdk";
 import type { AgentStreamHandler } from "./agent-stream.js";
 import { downloadSlackFile } from "./media-download.js";
+import {
+  createSlackChannelContext,
+  isSlackDm,
+  parseSlackCommandText,
+} from "./route-context.js";
 
 export interface SlackConfig {
   bot_token: string;
@@ -22,23 +38,43 @@ export interface SlackConfig {
 
 type LogFn = (level: string, msg: string) => void;
 
+type SlackInboundFile = {
+  id?: string;
+  mimetype?: string;
+  name?: string | null;
+  title?: string | null;
+  url_private?: string;
+};
+
 export class SlackBot {
   readonly app: App;
+  private receiver: SocketModeReceiver;
   private agent: Agent;
   private log: LogFn;
   private cacheDir: string;
+  private channelInstanceId: string;
+  private actorId: string;
   private streamHandler: AgentStreamHandler | null = null;
   private botUserId: string | null = null;
 
-  constructor(config: SlackConfig, agent: Agent, log: LogFn, cacheDir: string) {
+  constructor(
+    config: SlackConfig,
+    agent: Agent,
+    log: LogFn,
+    cacheDir: string,
+    channelInstanceId: string,
+    actorId: string,
+  ) {
     this.agent = agent;
     this.log = log;
     this.cacheDir = cacheDir;
+    this.channelInstanceId = channelInstanceId;
+    this.actorId = actorId;
 
+    this.receiver = new SocketModeReceiver({ appToken: config.app_token });
     this.app = new App({
       token: config.bot_token,
-      appToken: config.app_token,
-      socketMode: true,
+      receiver: this.receiver,
       // Disable built-in HTTP receiver — we're stdio-only
     });
 
@@ -61,9 +97,13 @@ export class SlackBot {
     await this.app.stop();
   }
 
+  isConnected(): boolean {
+    return this.receiver.client.websocket?.isActive() === true;
+  }
+
   private registerHandlers(): void {
     // Listen for DM messages only
-    this.app.message(async ({ message, say }) => {
+    this.app.message(async ({ message }) => {
       // Filter: only handle DM messages (channel_type === 'im')
       const msg = message as GenericMessageEvent;
       if (msg.channel_type !== "im") return;
@@ -81,97 +121,99 @@ export class SlackBot {
 
       this.log("debug", `dm chat=${chatId} user=${userId} text=${text.slice(0, 80)}`);
 
-      // Build content blocks
-      const contentBlocks: ContentBlock[] = [];
-
-      if (text) {
-        contentBlocks.push({ type: "text", text });
-      }
-
-      // Handle file attachments — download locally since Slack URLs need auth
-      if (msg.files && msg.files.length > 0) {
-        for (const file of msg.files) {
-          const isImage = file.mimetype?.startsWith("image/") ?? false;
-          if (!text) {
-            contentBlocks.push({
-              type: "text",
-              text: `The user sent ${isImage ? "an image" : "a file"}: ${file.name ?? "unnamed"}`,
-            });
-          }
-          if (file.url_private && file.id) {
-            const media = await downloadSlackFile({
-              botToken: this.app.client.token!,
-              urlPrivate: file.url_private,
-              fileId: file.id,
-              cacheDir: this.cacheDir,
-              chatId,
-              mimeType: file.mimetype ?? "application/octet-stream",
-              fileName: file.name ?? undefined,
-            });
-            if (media) {
-              contentBlocks.push({
-                type: "resource_link",
-                uri: `file://${media.path}`,
-                name: media.fileName ?? path.basename(media.path),
-                mimeType: media.mimeType,
-              });
-            }
-          }
-        }
-      }
-
+      const contentBlocks = await this.buildContentBlocks(chatId, text, msg.files);
       if (contentBlocks.length === 0) return;
 
+      const context = this.channelContext({
+        chatId,
+        topicId: msg.thread_ts,
+        senderId: userId,
+        platformMessageId: msg.ts,
+        scope: "dm",
+        addressedBy: "dm",
+      });
+
+      if (text && await this.cancelIfRequested(text, context, "dm")) return;
+
       // If a permission prompt is awaiting text, consume this message and stop.
-      if (text && this.streamHandler?.consumePendingText(chatId, text)) {
-        return;
-      }
+      const target = channelTargetFromInboundContext(context);
+      if (text && this.streamHandler?.consumePendingText(target, text)) return;
 
-      // Notify stream handler before prompt
-      this.streamHandler?.onPromptSent(chatId);
+      await this.promptAgent(context, contentBlocks, "dm");
+    });
 
-      try {
-        const response = await this.agent.prompt({
-          sessionId: chatId,
-          prompt: contentBlocks,
-        });
-        this.log("info", `prompt done chat=${chatId} stopReason=${response.stopReason}`);
-        this.streamHandler?.onTurnEnd(chatId);
-      } catch (error: unknown) {
-        const errMsg = extractErrorMessage(error);
-        this.log("error", `prompt failed chat=${chatId}: ${errMsg}`);
-        this.streamHandler?.onTurnError(chatId, errMsg);
-      }
+    this.app.event("app_mention", async ({ event }) => {
+      const mention = event as AppMentionEvent;
+      if (mention.subtype && mention.subtype !== "file_share") return;
+      if (mention.bot_id) return;
+      if (mention.user === this.botUserId) return;
+
+      const chatId = mention.channel;
+      const rawText = mention.text ?? "";
+      const text = this.stripBotMention(rawText);
+      const files = mention.files as SlackInboundFile[] | undefined;
+
+      if (!text && (!files || files.length === 0)) return;
+
+      this.log("debug", `mention chat=${chatId} user=${mention.user ?? ""} text=${text.slice(0, 80)}`);
+
+      const contentBlocks = await this.buildContentBlocks(chatId, text, files);
+      if (contentBlocks.length === 0) return;
+
+      const context = this.channelContext({
+        chatId,
+        topicId: mention.thread_ts,
+        senderId: mention.user,
+        platformMessageId: mention.ts,
+        scope: "group",
+        addressedBy: "mention",
+      });
+
+      if (text && await this.cancelIfRequested(text, context, "mention")) return;
+
+      // If a permission prompt is awaiting text, consume this message and stop.
+      const target = channelTargetFromInboundContext(context);
+      if (text && this.streamHandler?.consumePendingText(target, text)) return;
+
+      await this.promptAgent(context, contentBlocks, "mention");
     });
 
     // Handle /va and /vibearound slash commands — forward as /<rest> to the agent
     for (const cmd of ["/va", "/vibearound"]) {
-      this.app.command(cmd, async ({ command, ack }) => {
+      this.app.command(cmd, async ({ command, ack, respond }) => {
         await ack();
         const chatId = command.channel_id;
-        const text = command.text?.trim() ?? "";
+        const rawText = command.text?.trim() ?? "";
         const userId = command.user_id;
+        const scope = isSlackDm(chatId) ? "dm" : "group";
+        const text = parseSlackCommandText(rawText, scope, this.botUserId);
+
+        if (text === null) {
+          this.log("debug", `slash cmd=${cmd} ignored chat=${chatId}: bot not mentioned`);
+          await respond({
+            response_type: "ephemeral",
+            text: this.botUserId
+              ? `Mention <@${this.botUserId}> after ${cmd} in a channel.`
+              : "The bot identity is not ready yet. Please try again.",
+          });
+          return;
+        }
 
         // Reconstruct as a slash command: "/va help" → "/va help" (parser strips prefix)
         const fullText = text ? `${cmd} ${text}` : cmd;
         this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId} text=${text}`);
 
         const contentBlocks: ContentBlock[] = [{ type: "text", text: fullText }];
-
-        this.streamHandler?.onPromptSent(chatId);
-
-        try {
-          const response = await this.agent.prompt({
-            sessionId: chatId,
-            prompt: contentBlocks,
-          });
-          this.log("info", `slash prompt done chat=${chatId} stopReason=${response.stopReason}`);
-          this.streamHandler?.onTurnEnd(chatId);
-        } catch (error: unknown) {
-          const errMsg = extractErrorMessage(error);
-          this.log("error", `slash prompt failed chat=${chatId}: ${errMsg}`);
-          this.streamHandler?.onTurnError(chatId, errMsg);
-        }
+        const context = this.channelContext({
+          chatId,
+          topicId: (command as typeof command & { thread_ts?: string }).thread_ts,
+          senderId: userId,
+          platformMessageId: command.trigger_id,
+          scope,
+          addressedBy: scope === "dm" ? "dm" : "mention",
+        });
+        if (await this.cancelIfRequested(fullText, context, `slash ${cmd}`)) return;
+        await this.promptAgent(context, contentBlocks, `slash ${cmd}`);
       });
     }
 
@@ -220,6 +262,15 @@ export class SlackBot {
       const channelId = (body as any).channel?.id;
       if (!channelId) return;
 
+      const context = this.channelContext({
+        chatId: channelId,
+        topicId: (body as any).message?.thread_ts,
+        senderId: (body as any).user?.id,
+        platformMessageId: (body as any).message?.ts,
+        scope: isSlackDm(channelId) ? "dm" : "group",
+        addressedBy: "callback",
+      });
+
       this.agent.extNotification?.("_va/callback", {
         chatId: channelId,
         callbackId: (action as any).action_id,
@@ -228,7 +279,124 @@ export class SlackBot {
           name: (body as any).user?.name ?? "",
         },
         data: (action as any).value ?? (action as any).selected_option?.value ?? "",
+        "va.channel": context,
       }).catch(() => {});
     });
   }
+
+  private async buildContentBlocks(
+    chatId: string,
+    text: string,
+    files?: SlackInboundFile[],
+  ): Promise<ContentBlock[]> {
+    const contentBlocks: ContentBlock[] = [];
+
+    if (text) {
+      contentBlocks.push({ type: "text", text });
+    }
+
+    // Handle file attachments — download locally since Slack URLs need auth.
+    for (const file of files ?? []) {
+      const isImage = file.mimetype?.startsWith("image/") ?? false;
+      const fileName = file.name ?? file.title ?? undefined;
+
+      if (!text) {
+        contentBlocks.push({
+          type: "text",
+          text: `The user sent ${isImage ? "an image" : "a file"}: ${fileName ?? "unnamed"}`,
+        });
+      }
+
+      if (file.url_private && file.id) {
+        const media = await downloadSlackFile({
+          botToken: this.app.client.token!,
+          urlPrivate: file.url_private,
+          fileId: file.id,
+          cacheDir: this.cacheDir,
+          chatId,
+          mimeType: file.mimetype ?? "application/octet-stream",
+          fileName,
+        });
+        if (media) {
+          contentBlocks.push({
+            type: "resource_link",
+            uri: `file://${media.path}`,
+            name: media.fileName ?? path.basename(media.path),
+            mimeType: media.mimeType,
+          });
+        }
+      }
+    }
+
+    return contentBlocks;
+  }
+
+  private async promptAgent(
+    context: ChannelInboundContext,
+    contentBlocks: ContentBlock[],
+    source: string,
+  ): Promise<void> {
+    const chatId = context.chatId;
+    const target: ChannelTarget = channelTargetFromInboundContext(context);
+    this.streamHandler?.onPromptSent(target);
+
+    try {
+      const response = await sendChannelPrompt(this.agent, {
+        context,
+        prompt: contentBlocks,
+      });
+      if (!response) {
+        await this.streamHandler?.onTurnEnd(target);
+        return;
+      }
+      this.log("info", `${source} prompt done chat=${chatId} stopReason=${response.stopReason}`);
+      await this.streamHandler?.onTurnEnd(target);
+    } catch (error: unknown) {
+      const errMsg = extractErrorMessage(error);
+      this.log("error", `${source} prompt failed chat=${chatId}: ${errMsg}`);
+      await this.streamHandler?.onTurnError(target, errMsg);
+    }
+  }
+
+  private channelContext(
+    route: Omit<ChannelInboundContext, "channelInstanceId" | "actorId">,
+  ): ChannelInboundContext {
+    return createSlackChannelContext(
+      {
+        channelInstanceId: this.channelInstanceId,
+        actorId: this.actorId,
+        botUserId: this.botUserId,
+      },
+      route,
+    );
+  }
+
+  private async cancelIfRequested(
+    text: string,
+    context: ChannelInboundContext,
+    source: string,
+  ): Promise<boolean> {
+    if (!isChannelStopCommand(text)) return false;
+
+    try {
+      const cancelled = await cancelChannelPrompt(this.agent, { context });
+      this.log("info", `${source} cancel requested chat=${context.chatId} sent=${cancelled}`);
+    } catch (error: unknown) {
+      this.log(
+        "error",
+        `${source} cancel failed chat=${context.chatId}: ${extractErrorMessage(error)}`,
+      );
+    }
+    return true;
+  }
+
+  private stripBotMention(text: string): string {
+    if (!this.botUserId) return text.trim();
+    const mention = new RegExp(`^<@${escapeRegExp(this.botUserId)}>(?:\\s+|$)`);
+    return text.replace(mention, "").trim();
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
