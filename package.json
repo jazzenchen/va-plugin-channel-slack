@@ -1,6 +1,6 @@
 {
   "name": "@vibearound/plugin-channel-slack",
-  "version": "0.6.3",
+  "version": "0.6.6",
   "private": true,
   "type": "module",
   "description": "VibeAround Slack channel plugin (stdio JSON-RPC)",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@slack/bolt": "^4.1.0",
-    "@vibearound/plugin-channel-sdk": "^0.6.3"
+    "@vibearound/plugin-channel-sdk": "^0.6.6"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -17,7 +17,7 @@ import { AgentStreamHandler } from "./agent-stream.js";
 
 runChannelPlugin({
   name: "vibearound-slack",
-  version: "0.6.3",
+  version: "0.6.6",
   requiredConfig: ["bot_token", "app_token"],
   createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) =>
     new SlackBot(
