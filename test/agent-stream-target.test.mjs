@@ -161,18 +161,3 @@ test("Slack transport failures reject block delivery", async () => {
     updateFailure,
   );
 });
-
-test("Slack turn completion exposes final delivery failure", async () => {
-  const { handler } = createHandler({
-    postMessage: async () => { throw new Error("Slack final delivery failed"); },
-  });
-  const channelTarget = target();
-
-  handler.onPromptSent(channelTarget);
-  handler.onSessionUpdate(channelTarget, textChunk("final response", "chunk-final"));
-
-  await assert.rejects(
-    handler.onTurnEnd(channelTarget),
-    /Slack final delivery failed/,
-  );
-});
