@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { AgentStreamHandler } from "../dist/agent-stream.js";
 
-function createHandler() {
+function createHandler(overrides = {}) {
   const posted = [];
   const updated = [];
   let sequence = 0;
@@ -12,11 +12,13 @@ function createHandler() {
       client: {
         chat: {
           async postMessage(message) {
+            if (overrides.postMessage) return overrides.postMessage(message);
             posted.push(message);
             sequence += 1;
             return { ts: `sent-${sequence}` };
           },
           async update(message) {
+            if (overrides.update) return overrides.update(message);
             updated.push(message);
           },
         },
@@ -24,7 +26,7 @@ function createHandler() {
     },
   };
   return {
-    handler: new AgentStreamHandler(bot, () => {}),
+    handler: new AgentStreamHandler(bot),
     posted,
     updated,
   };
@@ -137,5 +139,40 @@ test("sequential Slack turns use each inbound message target without leaking con
       { text: "first turn", thread_ts: "thread-main" },
       { text: "second turn", thread_ts: "thread-main" },
     ],
+  );
+});
+
+test("Slack transport failures reject block delivery", async () => {
+  const postFailure = new Error("Slack post failed");
+  const updateFailure = new Error("Slack update failed");
+  const postHandler = createHandler({
+    postMessage: async () => { throw postFailure; },
+  }).handler;
+  const updateHandler = createHandler({
+    update: async () => { throw updateFailure; },
+  }).handler;
+
+  await assert.rejects(
+    postHandler.sendBlock(target(), "text", "block"),
+    postFailure,
+  );
+  await assert.rejects(
+    updateHandler.editBlock(target(), "sent-1", "text", "updated", true),
+    updateFailure,
+  );
+});
+
+test("Slack turn completion exposes final delivery failure", async () => {
+  const { handler } = createHandler({
+    postMessage: async () => { throw new Error("Slack final delivery failed"); },
+  });
+  const channelTarget = target();
+
+  handler.onPromptSent(channelTarget);
+  handler.onSessionUpdate(channelTarget, textChunk("final response", "chunk-final"));
+
+  await assert.rejects(
+    handler.onTurnEnd(channelTarget),
+    /Slack final delivery failed/,
   );
 });
