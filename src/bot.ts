@@ -119,7 +119,10 @@ export class SlackBot {
 
       if (!text && (!msg.files || msg.files.length === 0)) return;
 
-      this.log("debug", `dm chat=${chatId} user=${userId} text=${text.slice(0, 80)}`);
+      this.log(
+        "debug",
+        `dm chat=${chatId} user=${userId} text=${Boolean(text)} files=${msg.files?.length ?? 0}`,
+      );
 
       const contentBlocks = await this.buildContentBlocks(chatId, text, msg.files);
       if (contentBlocks.length === 0) return;
@@ -155,7 +158,10 @@ export class SlackBot {
 
       if (!text && (!files || files.length === 0)) return;
 
-      this.log("debug", `mention chat=${chatId} user=${mention.user ?? ""} text=${text.slice(0, 80)}`);
+      this.log(
+        "debug",
+        `mention chat=${chatId} user=${mention.user ?? ""} text=${Boolean(text)} files=${files?.length ?? 0}`,
+      );
 
       const contentBlocks = await this.buildContentBlocks(chatId, text, files);
       if (contentBlocks.length === 0) return;
@@ -201,7 +207,7 @@ export class SlackBot {
 
         // Reconstruct as a slash command: "/va help" → "/va help" (parser strips prefix)
         const fullText = text ? `${cmd} ${text}` : cmd;
-        this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId} text=${text}`);
+        this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId}`);
 
         const contentBlocks: ContentBlock[] = [{ type: "text", text: fullText }];
         const context = this.channelContext({
