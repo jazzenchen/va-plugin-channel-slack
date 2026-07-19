@@ -8,6 +8,7 @@
  */
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { App, SocketModeReceiver } from "@slack/bolt";
 import type { AppMentionEvent, GenericMessageEvent } from "@slack/types";
 import type {
@@ -326,7 +327,7 @@ export class SlackBot {
         if (media) {
           contentBlocks.push({
             type: "resource_link",
-            uri: `file://${media.path}`,
+            uri: pathToFileURL(media.path).href,
             name: media.fileName ?? path.basename(media.path),
             mimeType: media.mimeType,
           });
