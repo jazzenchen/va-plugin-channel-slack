@@ -31,8 +31,8 @@ runChannelPlugin({
       channelInstanceId,
       actorId,
     ),
-  createRenderer: (bot, log, verbose) =>
-    new AgentStreamHandler(bot, log, verbose),
+  createRenderer: (bot, _log, verbose) =>
+    new AgentStreamHandler(bot, verbose),
   // Heartbeats prove the inbound Socket Mode transport is live. A valid Web
   // API token alone does not mean Slack events can reach this process.
   healthCheck: async (bot) => bot.isConnected(),

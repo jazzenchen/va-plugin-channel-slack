@@ -8,6 +8,7 @@
  */
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { App, SocketModeReceiver } from "@slack/bolt";
 import type { AppMentionEvent, GenericMessageEvent } from "@slack/types";
 import type {
@@ -119,7 +120,10 @@ export class SlackBot {
 
       if (!text && (!msg.files || msg.files.length === 0)) return;
 
-      this.log("debug", `dm chat=${chatId} user=${userId} text=${text.slice(0, 80)}`);
+      this.log(
+        "debug",
+        `dm chat=${chatId} user=${userId} text=${Boolean(text)} files=${msg.files?.length ?? 0}`,
+      );
 
       const contentBlocks = await this.buildContentBlocks(chatId, text, msg.files);
       if (contentBlocks.length === 0) return;
@@ -155,7 +159,10 @@ export class SlackBot {
 
       if (!text && (!files || files.length === 0)) return;
 
-      this.log("debug", `mention chat=${chatId} user=${mention.user ?? ""} text=${text.slice(0, 80)}`);
+      this.log(
+        "debug",
+        `mention chat=${chatId} user=${mention.user ?? ""} text=${Boolean(text)} files=${files?.length ?? 0}`,
+      );
 
       const contentBlocks = await this.buildContentBlocks(chatId, text, files);
       if (contentBlocks.length === 0) return;
@@ -201,7 +208,7 @@ export class SlackBot {
 
         // Reconstruct as a slash command: "/va help" → "/va help" (parser strips prefix)
         const fullText = text ? `${cmd} ${text}` : cmd;
-        this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId} text=${text}`);
+        this.log("debug", `slash cmd=${cmd} chat=${chatId} user=${userId}`);
 
         const contentBlocks: ContentBlock[] = [{ type: "text", text: fullText }];
         const context = this.channelContext({
@@ -271,7 +278,7 @@ export class SlackBot {
         addressedBy: "callback",
       });
 
-      this.agent.extNotification?.("_va/callback", {
+      await this.agent.extNotification?.("_va/callback", {
         chatId: channelId,
         callbackId: (action as any).action_id,
         sender: {
@@ -280,7 +287,7 @@ export class SlackBot {
         },
         data: (action as any).value ?? (action as any).selected_option?.value ?? "",
         "va.channel": context,
-      }).catch(() => {});
+      });
     });
   }
 
@@ -320,7 +327,7 @@ export class SlackBot {
         if (media) {
           contentBlocks.push({
             type: "resource_link",
-            uri: `file://${media.path}`,
+            uri: pathToFileURL(media.path).href,
             name: media.fileName ?? path.basename(media.path),
             mimeType: media.mimeType,
           });
