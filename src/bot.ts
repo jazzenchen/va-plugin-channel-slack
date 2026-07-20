@@ -278,7 +278,7 @@ export class SlackBot {
         addressedBy: "callback",
       });
 
-      this.agent.extNotification?.("_va/callback", {
+      await this.agent.extNotification?.("_va/callback", {
         chatId: channelId,
         callbackId: (action as any).action_id,
         sender: {
@@ -287,7 +287,7 @@ export class SlackBot {
         },
         data: (action as any).value ?? (action as any).selected_option?.value ?? "",
         "va.channel": context,
-      }).catch(() => {});
+      });
     });
   }
 
