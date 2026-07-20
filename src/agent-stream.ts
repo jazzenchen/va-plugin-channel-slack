@@ -11,13 +11,10 @@ import {
 } from "@vibearound/plugin-channel-sdk";
 import type { SlackBot } from "./bot.js";
 
-type LogFn = (level: string, msg: string) => void;
-
 export class AgentStreamHandler extends BlockRenderer<string> {
   private slackBot: SlackBot;
-  private log: LogFn;
 
-  constructor(slackBot: SlackBot, log: LogFn, verbose?: Partial<VerboseConfig>) {
+  constructor(slackBot: SlackBot, verbose?: Partial<VerboseConfig>) {
     super({
       streaming: true,
       flushIntervalMs: 500,
@@ -25,7 +22,6 @@ export class AgentStreamHandler extends BlockRenderer<string> {
       verbose,
     });
     this.slackBot = slackBot;
-    this.log = log;
   }
 
   /** Render permission request as a Block Kit actions block. */
@@ -84,17 +80,12 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     _kind: BlockKind,
     content: string,
   ): Promise<string | null> {
-    try {
-      const result = await this.slackBot.app.client.chat.postMessage({
-        channel: target.chatId,
-        text: content,
-        ...(target.topicId ? { thread_ts: target.topicId } : {}),
-      });
-      return result.ts ?? null;
-    } catch (e) {
-      this.log("error", `sendBlock failed: ${e}`);
-      return null;
-    }
+    const result = await this.slackBot.app.client.chat.postMessage({
+      channel: target.chatId,
+      text: content,
+      ...(target.topicId ? { thread_ts: target.topicId } : {}),
+    });
+    return result.ts ?? null;
   }
 
   protected async editBlock(
@@ -104,15 +95,11 @@ export class AgentStreamHandler extends BlockRenderer<string> {
     content: string,
     _sealed: boolean,
   ): Promise<void> {
-    try {
-      await this.slackBot.app.client.chat.update({
-        channel: target.chatId,
-        ts: ref,
-        text: content,
-      });
-    } catch (e) {
-      this.log("error", `editBlock failed: ${e}`);
-    }
+    await this.slackBot.app.client.chat.update({
+      channel: target.chatId,
+      ts: ref,
+      text: content,
+    });
   }
 }
 
