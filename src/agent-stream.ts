@@ -6,6 +6,7 @@ import {
   BlockRenderer,
   type BlockKind,
   type ChannelTarget,
+  type OutboundFile,
   type RequestPermissionRequest,
   type VerboseConfig,
 } from "@vibearound/plugin-channel-sdk";
@@ -65,6 +66,26 @@ export class AgentStreamHandler extends BlockRenderer<string> {
       text,
       ...(target.topicId ? { thread_ts: target.topicId } : {}),
     });
+  }
+
+  protected async sendFile(
+    target: ChannelTarget,
+    file: OutboundFile,
+  ): Promise<void> {
+    const upload = {
+      channel_id: target.chatId,
+      file: file.path,
+      filename: file.name,
+      title: file.name,
+    };
+    if (target.topicId) {
+      await this.slackBot.app.client.files.uploadV2({
+        ...upload,
+        thread_ts: target.topicId,
+      });
+      return;
+    }
+    await this.slackBot.app.client.files.uploadV2(upload);
   }
 
   protected formatContent(kind: BlockKind, content: string, _sealed: boolean): string {
