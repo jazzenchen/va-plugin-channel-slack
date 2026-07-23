@@ -10,14 +10,20 @@
  * Host streams back via sessionUpdate notifications.
  */
 
+import { createRequire } from "node:module";
+
 import { runChannelPlugin } from "@vibearound/plugin-channel-sdk";
 
 import { SlackBot } from "./bot.js";
 import { AgentStreamHandler } from "./agent-stream.js";
 
+const packageVersion = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
+
 runChannelPlugin({
   name: "vibearound-slack",
-  version: "0.6.6",
+  version: packageVersion,
   requiredConfig: ["bot_token", "app_token"],
   createBot: ({ config, agent, log, cacheDir, channelInstanceId, actorId }) =>
     new SlackBot(
