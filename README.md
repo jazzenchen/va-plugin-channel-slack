@@ -42,6 +42,7 @@ Create the Slack app from **Slack API** -> **Your Apps** -> **Create New App** -
     "scopes": {
       "bot": [
         "files:read",
+        "files:write",
         "app_mentions:read",
         "chat:write",
         "commands",
@@ -72,7 +73,7 @@ Create the Slack app from **Slack API** -> **Your Apps** -> **Create New App** -
 
 The manifest enables:
 
-- Bot scopes: `files:read`, `app_mentions:read`, `chat:write`, `commands`, `im:history`, `im:read`, `im:write`
+- Bot scopes: `files:read`, `files:write`, `app_mentions:read`, `chat:write`, `commands`, `im:history`, `im:read`, `im:write`
 - Bot events: `app_mention`, `message.im`
 - Socket Mode and interactivity
 - Slash commands: `/va`, `/vibearound`
