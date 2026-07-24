@@ -6,6 +6,7 @@ import { AgentStreamHandler } from "../dist/agent-stream.js";
 function createHandler(overrides = {}) {
   const posted = [];
   const updated = [];
+  const uploaded = [];
   let sequence = 0;
   const bot = {
     app: {
@@ -22,6 +23,11 @@ function createHandler(overrides = {}) {
             updated.push(message);
           },
         },
+        files: {
+          async uploadV2(file) {
+            uploaded.push(file);
+          },
+        },
       },
     },
   };
@@ -29,8 +35,26 @@ function createHandler(overrides = {}) {
     handler: new AgentStreamHandler(bot),
     posted,
     updated,
+    uploaded,
   };
 }
+
+test("Slack uploads files into the active thread", async () => {
+  const { handler, uploaded } = createHandler();
+
+  await handler.sendFile(target(), {
+    path: "/workspace/report.pdf",
+    name: "report.pdf",
+  });
+
+  assert.deepEqual(uploaded, [{
+    channel_id: "C_SHARED",
+    file: "/workspace/report.pdf",
+    filename: "report.pdf",
+    title: "report.pdf",
+    thread_ts: "thread-main",
+  }]);
+});
 
 function target(overrides = {}) {
   return {
